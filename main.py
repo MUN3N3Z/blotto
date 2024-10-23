@@ -2,7 +2,6 @@ from sys import argv, stdin
 from decimal import Decimal, getcontext
 from typing import List, Tuple, Dict
 from enum import Enum
-import random
 from itertools import product
 from scipy.optimize import linprog
 from pprint import pprint
@@ -22,7 +21,7 @@ class ScoringSchema(Enum):
             return ScoringSchema.LOTTERY
 
 def read_piped_input() -> List[str]:
-    if not stdin.isatty():
+    if not stdin.isatty() and not stdin.closed:
         return [line.strip() for line in stdin]
     return []
 
@@ -59,28 +58,28 @@ def parse_pure_strategy(mixed_strategy: str) -> Tuple[List[int], str]:
     parts = mixed_strategy.split(',')
     return [int(parts[x]) for x in range(0, len(parts) - 1)], Decimal(parts[-1])
     
-def compute_strategy_payoff(strategy1: List[int], scoring_schema: ScoringSchema, battlefield_values: List[int], strategy2: List[int] = None) -> Decimal:
+def compute_strategy_payoff(strategy1: List[int], scoring_schema: ScoringSchema, battlefield_values: List[int], strategy2: List[int]) -> Decimal:
     """
         Compute the payoff for the given strategy for player 1 in the specified scoring schema.
         strategy1: Player 1's list of units distributed for each battlefield.
-        strategy2: Player 2's list of units distributed for each battlefield. If None, we assume both players play the same strategy.
+        strategy2: Player 2's list of units distributed for each battlefield.
         scoring_schema: win, score or lottery.
         battlefield_values: list of values for each battlefield.
     """
-    strategy2 = strategy1 if strategy2 is None else strategy2
-    if scoring_schema == ScoringSchema.WIN:
-        return Decimal(sum(1 if player1_allocation > player2_allocation else 0.5 if player1_allocation == player2_allocation else 0 for player1_allocation, player2_allocation in zip(strategy1, strategy2)))
-    elif scoring_schema == ScoringSchema.SCORE:
-        return Decimal(sum(battlefield_values[i] if player1_allocation > player2_allocation else battlefield_values[i] / 2 if player1_allocation == player2_allocation else 0 for i, (player1_allocation, player2_allocation) in enumerate(zip(strategy1, strategy2))))
+    if scoring_schema == ScoringSchema.WIN or scoring_schema == ScoringSchema.SCORE:
+        player1_score = Decimal(sum(battlefield_values[i] if player1_allocation > player2_allocation else battlefield_values[i] / 2 if player1_allocation == player2_allocation else 0 for i, (player1_allocation, player2_allocation) in enumerate(zip(strategy1, strategy2))))
+        if scoring_schema == ScoringSchema.SCORE:
+            return player1_score
+        else:
+            return Decimal(1) if player1_score > (sum(battlefield_values) / 2) else Decimal(0) if player1_score < (sum(battlefield_values) / 2) else Decimal(0.5)
     else:
         score = Decimal(0)
         for i, (player1_allocation, player2_allocation) in enumerate(zip(strategy1, strategy2)):
             if player1_allocation == 0 and player2_allocation == 0:
                 # Decide winner by coin flip
-                score += battlefield_values[i] if random.choice([1, 2]) == 1 else 0
+                score += Decimal(0.5) * battlefield_values[i]
             else:
-                probability_player1_wins = Decimal(player1_allocation ** 2 / (player1_allocation ** 2 + player2_allocation ** 2))
-                score += Decimal(battlefield_values[i]) * probability_player1_wins
+                score += battlefield_values[i] * Decimal(player1_allocation ** 2 / (player1_allocation ** 2 + player2_allocation ** 2))
         return score        
 
 def generate_pure_strategies(units_to_distribute: int, battlefield_count: int) -> List[Tuple[int]]:
@@ -89,7 +88,7 @@ def generate_pure_strategies(units_to_distribute: int, battlefield_count: int) -
     """
     return [strategy for strategy in product(range(units_to_distribute + 1), repeat=battlefield_count) if sum(strategy) == units_to_distribute]
 
-def verify_equilibrium(mixed_strategies: List[str], scoring_criteria: ScoringSchema, battlefield_values: List[int], tolerance: Decimal) -> bool:
+def verify_equilibrium(mixed_strategies: List[str], scoring_criteria: ScoringSchema, battlefield_values: List[int], tolerance: Decimal) -> None:
     """
         Given a list of mixed strategies, verify if they are an equilibrium.
         Return "PASSED" if they are, the failing mixed strategy otherwise.
@@ -106,21 +105,22 @@ def verify_equilibrium(mixed_strategies: List[str], scoring_criteria: ScoringSch
         - tolerance: tolerance for the comparison of the expected payoffs.
     """
     proposed_equilibrium_mixed_strategy = [parse_pure_strategy(strategy) for strategy in mixed_strategies]
-    proposed_equilibrium_mixed_strategy_payoff = sum(probability * probability * compute_strategy_payoff(pure_strategy, scoring_criteria, battlefield_values) for pure_strategy, probability in proposed_equilibrium_mixed_strategy)
+    proposed_equilibrium_mixed_strategy_payoff = sum(probability1 * probability2 * compute_strategy_payoff(pure_strategy1, scoring_criteria, battlefield_values, pure_strategy2) for pure_strategy1, probability1 in proposed_equilibrium_mixed_strategy for pure_strategy2, probability2 in proposed_equilibrium_mixed_strategy)
     units_to_distribute = sum(proposed_equilibrium_mixed_strategy[0][0])
-    for pure_strategy_deviation in generate_pure_strategies(units_to_distribute, len(battlefield_values)):
-        # Check if player 1's unilateral deviation is profitable
+    pure_strategies = generate_pure_strategies(units_to_distribute, len(battlefield_values))
+    for pure_strategy_deviation in pure_strategies:
+        # Check if player 1's unilateral deviation is more profitable
         player1_unilateral_deviation = sum(probability * compute_strategy_payoff(pure_strategy_deviation, scoring_criteria, battlefield_values, pure_strategy_in_mixed_strategy) for pure_strategy_in_mixed_strategy, probability in proposed_equilibrium_mixed_strategy)
-        if player1_unilateral_deviation > proposed_equilibrium_mixed_strategy_payoff + tolerance:
+        if player1_unilateral_deviation > (proposed_equilibrium_mixed_strategy_payoff + tolerance):
             print(f'E[{pure_strategy_deviation}, Y] = {player1_unilateral_deviation} > {proposed_equilibrium_mixed_strategy_payoff}')
-            return False
-        # Check if player 2's unilateral deviation is profitable
+            return 
+        # Check if player 2's unilateral deviation is more profitable
         player2_unilateral_deviation = sum(probability * compute_strategy_payoff(pure_strategy_in_mixed_strategy, scoring_criteria, battlefield_values, pure_strategy_deviation) for pure_strategy_in_mixed_strategy, probability in proposed_equilibrium_mixed_strategy)
-        if player2_unilateral_deviation < proposed_equilibrium_mixed_strategy_payoff - tolerance:
+        if player2_unilateral_deviation < (proposed_equilibrium_mixed_strategy_payoff - tolerance):
             print(f'E[X, {pure_strategy_deviation}] = {player2_unilateral_deviation} < {proposed_equilibrium_mixed_strategy_payoff}')
-            return False
+            return
     print('PASSED')
-    return True
+    return
         
 def generate_payoff_matrix(scoring_criteria: ScoringSchema, battlefield_values: List[int], units_to_distribute: int) -> Tuple[List[Tuple[int]], np.ndarray]:
     """
@@ -139,35 +139,29 @@ def find_equilibrium(scoring_criteria: ScoringSchema, units_to_distribute: int, 
         Print to stdout a list of tuples with the units distributed for each battlefield.
     """
     pure_strategies, payoff_matrix = generate_payoff_matrix(scoring_criteria, battlefield_values, units_to_distribute)
-    pprint(pure_strategies)
-    pprint(payoff_matrix)
     # Objective function: minimize -v
-    c = [0] * len(pure_strategies) + [-1]
+    c = ([0] * len(pure_strategies)) + [-1]
     # Equality constraints: sum of probabilities is 1
     A_eq = [[1] * len(pure_strategies) + [0]]
     b_eq = [1]
     # Inequality constraints: expected payoff for each pure strategy >= v
     A_ub = np.hstack([-payoff_matrix.T, np.ones((len(pure_strategies), 1))])
-    b_ub = [0] * len(pure_strategies)
+    b_ub = np.zeros(len(pure_strategies))
     # Bounds: 0 <= probability <= 1
     bounds = [(0, 1)] * len(pure_strategies) + [(np.min(payoff_matrix), np.max(payoff_matrix))]
     # Solve the linear program
     result = linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
     if result.success:
-        probabilities = np.maximum(result.x[:-1], 0)
+        probabilities = result.x[:-1][result.x[:-1] > tolerance]
         sum_probabilities = np.sum(probabilities)
+        probabilities /= sum_probabilities
         for probability, strategy in zip(probabilities, pure_strategies):
-            probabilities /= sum_probabilities
-            if probability > 0: 
-                print(f'{",".join(map(str, strategy))},{probability:.18f}')
+            print(f'{",".join(map(str, strategy))},{probability:.18f}')
 
 if __name__ == '__main__':
     getcontext().prec = 30
-    random.seed(19)
     find_or_verify, tolerance, scoring_criteria, units_to_distribute, battlefield_values, mixed_strategies_to_verify = parse_args()
     if find_or_verify == 'verify':
         verify_equilibrium(mixed_strategies_to_verify, scoring_criteria, battlefield_values, tolerance)
     else:
         find_equilibrium(scoring_criteria, units_to_distribute, battlefield_values, tolerance)
-
-   
