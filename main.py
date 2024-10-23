@@ -1,10 +1,9 @@
 from sys import argv, stdin
 from decimal import Decimal, getcontext
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 from enum import Enum
 from itertools import product
 from scipy.optimize import linprog
-from pprint import pprint
 import numpy as np
 
 class ScoringSchema(Enum):
@@ -152,14 +151,14 @@ def find_equilibrium(scoring_criteria: ScoringSchema, units_to_distribute: int, 
     # Solve the linear program
     result = linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method='highs')
     if result.success:
-        probabilities = result.x[:-1][result.x[:-1] > tolerance]
-        sum_probabilities = np.sum(probabilities)
-        probabilities /= sum_probabilities
-        for probability, strategy in zip(probabilities, pure_strategies):
-            print(f'{",".join(map(str, strategy))},{probability:.18f}')
+        probabilities = [result.x[:-1] > tolerance]
+        for probability, strategy in zip(result.x[:-1], pure_strategies):
+            if probability > tolerance:     
+                print(f'{",".join(map(str, strategy))},{probability:.18f}')
+    return
 
 if __name__ == '__main__':
-    getcontext().prec = 30
+    getcontext().prec = 18
     find_or_verify, tolerance, scoring_criteria, units_to_distribute, battlefield_values, mixed_strategies_to_verify = parse_args()
     if find_or_verify == 'verify':
         verify_equilibrium(mixed_strategies_to_verify, scoring_criteria, battlefield_values, tolerance)
